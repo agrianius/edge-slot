@@ -27,6 +27,6 @@ Connections and disconnections of objects from different threads is performed th
 
 An object can be moved to another thread. This will cause arbitrary delivery order of signals that were on the way while moving. Do not make connections to an object while moving it to avoid ABA-problems or leaks in connections and disconnections.
 
-Everything will work lock-free except the case of moving objects between threads. While moving an object there is a short time lock that prevents signal delivery to the object.
+Signal delivery is lock-free except the case of moving objects between threads. While moving an object to another thread there is a short time lock that prevents signal delivery to the object.
 
 Sending of a signal is wait-free. But receiving of a signal is not wait-free becase one sleeping sending thread hinder delivery of all subsequent signals.
