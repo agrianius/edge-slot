@@ -19,7 +19,7 @@ The library do not take care about life time of objects. Library do not deliver 
 
 The library is effectively thread-safe. All signals is delivered to a object in its thread.
 
-Destroy an object in a thread that the object belongs to. This allows to avoid signal delivery to destroyed objects. Or you can do the destroying in any thread if you are sure that there is no signals on the way.
+Destroy an object in a thread that the object belongs to. This allows to avoid signal delivery to the destroyed object. Or you can do the destroying in any thread if you are sure that there is no signals on the way to the destroying object.
 
 All signals is delivered to objects in one of two ways. If it was a thread of the object then a slot is directly called. If it was other thread then a signal is delivered via lock-free message queue to the object's thread. All threads that have objects should perform message loop. That is what TEdgeSlotThread is doing by default.
 
