@@ -29,4 +29,4 @@ An object can be moved to another thread. This will cause arbitrary delivery ord
 
 Signal delivery is lock-free except the case of moving objects between threads. While moving an object to another thread there is a short time lock that prevents signal delivery to the object.
 
-Sending of a signal is wait-free. But receiving of a signal is not wait-free becase one sleeping sending thread hinder delivery of all subsequent signals.
+Sending of a signal is wait-free. But receiving of a signal is not wait-free becase one sleeping sending thread hinder receiving of all subsequent signals.
