@@ -81,6 +81,7 @@ protected:
 
 
 class TObjectAnchor;
+class TEdgeSlotObject;
 
 
 class TEdgeSlotThread {
@@ -106,6 +107,8 @@ public:
     }
 
     void GrabObject(TObjectAnchor* anchor) const;
+
+    void GrabObject(TEdgeSlotObject* obj) const;
 
     std::shared_ptr<TMailbox> GetMailbox() const noexcept {
         return Mailbox;
@@ -171,9 +174,8 @@ protected:
 
 class TObjectMonitor {
 public:
-    TObjectMonitor(void* object) noexcept
+    TObjectMonitor() noexcept
         : RefCounter(1)
-        , Object(object)
         , Mailbox(TEdgeSlotThread::LocalMailbox)
     {}
 
@@ -204,10 +206,6 @@ public:
         return 1 & RefCounter.load(std::memory_order_acquire);
     }
 
-    void* GetObject() const noexcept {
-        return Object.load();
-    }
-
     std::shared_ptr<TMailbox> GetMailbox() const noexcept {
         TReadGuard guard(&MailboxLock);
         return Mailbox;
@@ -228,12 +226,7 @@ protected:
 
     friend class TObjectAnchor;
 
-    void ResetObject(void* NewObject) {
-        Object.store(NewObject);
-    }
-
     std::atomic<uintptr_t> RefCounter;
-    std::atomic<void*> Object;
     std::shared_ptr<TMailbox> Mailbox;
     mutable TSpinRWLock MailboxLock;
 };
@@ -307,8 +300,8 @@ protected:
 
 class TObjectAnchor {
 public:
-    TObjectAnchor(void* object)
-        : Monitor(new TObjectMonitor(object))
+    TObjectAnchor()
+        : Monitor(new TObjectMonitor)
     {}
 
     ~TObjectAnchor() {
@@ -320,7 +313,7 @@ public:
             Monitor = nullptr;
             return;
         }
-        Monitor = new TObjectMonitor(AdjustObjectPtr(copy));
+        Monitor = new TObjectMonitor;
     }
 
     TObjectAnchor(TObjectAnchor&& copy) noexcept {
@@ -328,10 +321,8 @@ public:
             Monitor = nullptr;
             return;
         }
-        void* object = AdjustObjectPtr(copy);
         Monitor = copy.Monitor;
         copy.Monitor = nullptr;
-        Monitor->ResetObject(object);
     }
 
     void operator=(const TObjectAnchor& copy) {
@@ -340,7 +331,7 @@ public:
             Monitor = nullptr;
             return;
         }
-        Monitor = new TObjectMonitor(AdjustObjectPtr(copy));
+        Monitor = new TObjectMonitor;
     }
 
     void operator=(TObjectAnchor&& copy) {
@@ -349,10 +340,8 @@ public:
             Monitor = nullptr;
             return;
         }
-        void* object = AdjustObjectPtr(copy);
         Monitor = copy.Monitor;
         copy.Monitor = nullptr;
-        Monitor->ResetObject(object);
     }
 
     TMonitorPtr GetLink() const noexcept {
@@ -372,15 +361,6 @@ public:
     }
 
 private:
-    void* AdjustObjectPtr(const TObjectAnchor& copy) const noexcept {
-        ptrdiff_t distance =
-            reinterpret_cast<const char*>(this) -
-            reinterpret_cast<const char*>(&copy);
-        char* object = reinterpret_cast<char*>(copy.Monitor->GetObject());
-        object += distance;
-        return object;
-    }
-
     void Unlink() noexcept {
         if (Monitor != nullptr)
             Monitor->ObjectIsDead();
@@ -390,8 +370,32 @@ private:
 };
 
 
+class TAnchorHolder {
+public:
+    TObjectAnchor& GetAnchor() noexcept {
+        return Anchor_;
+    }
+
+    const TObjectAnchor& GetAnchor() const noexcept {
+        return Anchor_;
+    }
+
+private:
+    TObjectAnchor Anchor_;
+};
+
+
+class TEdgeSlotObject: public virtual TAnchorHolder {
+};
+
+
 WEAK void TEdgeSlotThread::GrabObject(TObjectAnchor* anchor) const {
     anchor->MoveToMailbox(Mailbox);
+}
+
+
+WEAK void TEdgeSlotThread::GrabObject(TEdgeSlotObject* obj) const {
+    GrabObject(&obj->GetAnchor());
 }
 
 
@@ -424,9 +428,7 @@ class TSignal: public TObjectMessage {
 public:
     TSignal(TMonitorPtr link, TSlot<TParams...>* slot, TParams...params)
         : TObjectMessage(std::move(link))
-        , ParamsTuple(slot,
-                ObjectLink->GetObject(),
-                std::forward<TParams>(params)...)
+        , ParamsTuple(slot, std::forward<TParams>(params)...)
     {}
 
     virtual void Consume() override {
@@ -436,14 +438,13 @@ public:
 
     static void ConsumeImpl(
             TSlot<TParams...>* slot,
-            void* object,
             TParams... params) noexcept
     {
-        slot->receive(object, std::forward<TParams>(params)...);
+        slot->receive(std::forward<TParams>(params)...);
     }
 
 protected:
-    std::tuple<TSlot<TParams...>*, void*, TParams...> ParamsTuple;
+    std::tuple<TSlot<TParams...>*, TParams...> ParamsTuple;
 
     template <class F, class Tuple, std::size_t... I>
     static void ApplyImpl(F&& f, Tuple&& t, std::index_sequence<I...>) {
@@ -569,11 +570,18 @@ protected:
 };
 
 
+#define DEFINE_SLOT(TObject, Method, SlotName)                       \
+    decltype(bsc::GetCallee(&TObject::Method))::TSlotType SlotName = \
+        decltype(bsc::GetCallee(&TObject::Method))::                 \
+            GetSlot<&TObject::Method>(this);
+
+
 template <typename...TParams>
 class TSlot {
 public:
-    TSlot(TConnectCallee<TParams...> slot)
-        : Slot(slot)
+    TSlot(void* object, TConnectCallee<TParams...> slot)
+        : Object(object)
+        , Slot(slot)
     {}
 
     ~TSlot() {
@@ -684,11 +692,12 @@ protected:
         TEdge<TParams...>* Edge;
     };
 
+    void* Object;
     const TConnectCallee<TParams...> Slot;
     std::vector<TSlotConnection> SlotConnections;
 
-    void receive(void* object, TParams...params) {
-        Slot(this, object, std::move(params)...);
+    void receive(TParams...params) {
+        Slot(this, Object, std::move(params)...);
     }
 };
 
@@ -696,7 +705,7 @@ protected:
 template <typename...TParams>
 class TEdge: public TSlot<TParams...> {
 public:
-    TEdge(): TSlot<TParams...>(&forward_callee) {}
+    TEdge(void* object): TSlot<TParams...>(object, &forward_callee) {}
 
     ~TEdge() {
         for (const auto& i: EdgeConnections)
@@ -714,7 +723,7 @@ public:
                 continue;
             if (!elem.ObjectLink->IsAlive())
                 continue;
-            elem.Slot->receive(elem.ObjectLink->GetObject(), params...);
+            elem.Slot->receive(params...);
         }
 
         if (NeedCleanup) {
@@ -883,15 +892,16 @@ template <typename TObject, typename...TParams>
 class TCallee {
 public:
     template <void (TObject::* Member)(TParams...)>
-    static void Callee(const TSlot<TParams...>*, void* object, TParams...params) {
+    static void
+    Callee(const TSlot<TParams...>*, void* object, TParams...params) {
         (reinterpret_cast<TObject*>(object)->*Member)(params...);
     }
 
     using TSlotType = TSlot<TParams...>;
 
     template <void (TObject::* Member)(TParams...)>
-    static TSlotType GetSlot() {
-        return TSlot<TParams...>(&Callee<Member>);
+    static TSlotType GetSlot(void* object) {
+        return TSlot<TParams...>(object, &Callee<Member>);
     }
 };
 
@@ -902,13 +912,16 @@ TCallee<TObject, TParams...> GetCallee(void (TObject::*)(TParams...)) {
 }
 
 
-template <typename...TParams>
-void Connect(const TObjectAnchor* edge_object,
+template <typename TEdgeContainer, typename TSlotContainer, typename...TParams>
+void Connect(const TEdgeContainer* edge_object,
              TEdge<TParams...>* edge,
-             const TObjectAnchor* slot_object,
+             const TSlotContainer* slot_object,
              TSlot<TParams...>* slot)
 {
-    slot->connect(slot_object->GetLink(), edge_object->GetLink(), edge);
+    slot->connect(
+        slot_object->GetAnchor().GetLink(),
+        edge_object->GetAnchor().GetLink(),
+        edge);
 }
 
 

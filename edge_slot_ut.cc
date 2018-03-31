@@ -29,43 +29,38 @@ SOFTWARE.
 #include <thread>
 
 
-using bsc::TEdge;
-using bsc::GetCallee;
 using bsc::Connect;
+using bsc::GetCallee;
 using bsc::IMessage;
-using bsc::TObjectMessage;
-using bsc::TMessagePtr;
-using bsc::TSignal;
-using bsc::TMailbox;
 using bsc::MPSC_TailSwap;
-using bsc::TMessagePtr;
-using bsc::TObjectAnchor;
+using bsc::TEdge;
 using bsc::TEdgeSlotThread;
+using bsc::TEdgeSlotObject;
+using bsc::TMailbox;
+using bsc::TMessagePtr;
+using bsc::TObjectMessage;
+using bsc::TSignal;
 
 
-class TTestSlot {
+class TTestSlot: public TEdgeSlotObject {
 public:
     void test_slot_func(int a, int b) {
         Counter += a + b;
     }
 
-    decltype(GetCallee(&TTestSlot::test_slot_func))::TSlotType Slot =
-        decltype(GetCallee(&TTestSlot::test_slot_func))::
-        GetSlot<&TTestSlot::test_slot_func>();
+    DEFINE_SLOT(TTestSlot, test_slot_func, Slot);
 
-    TObjectAnchor Anchor = TObjectAnchor(this);
     ui32 Counter = 0;
 };
 
 
-class TTestEdge {
+class TTestEdge: public TEdgeSlotObject {
 public:
-    TObjectAnchor Anchor = TObjectAnchor(this);
-    TEdge<int, int> Edge;
+    TEdge<int, int> Edge = TEdge<int, int>(this);
 };
 
 
-class TCallbackSlot {
+class TCallbackSlot: public TEdgeSlotObject {
 public:
     void test_slot_func(int a, int b) {
         Counter += a + b;
@@ -73,11 +68,8 @@ public:
             Callback();
     }
 
-    decltype(GetCallee(&TCallbackSlot::test_slot_func))::TSlotType Slot =
-        decltype(GetCallee(&TCallbackSlot::test_slot_func))::
-        GetSlot<&TCallbackSlot::test_slot_func>();
+    DEFINE_SLOT(TCallbackSlot, test_slot_func, Slot);
 
-    TObjectAnchor Anchor = TObjectAnchor(this);
     ui32 Counter = 0;
     std::function<void()> Callback = nullptr;
 };
@@ -94,7 +86,7 @@ TEST(EDGE_SLOT, ConnectAndEmit) {
     TTestEdge sig;
     TTestSlot slt;
 
-    Connect(&sig.Anchor, &sig.Edge, &slt.Anchor, &slt.Slot);
+    Connect(&sig, &sig.Edge, &slt, &slt.Slot);
 
     CHECK(slt.Counter == 0);
     sig.Edge.emit(1, 2);
@@ -113,12 +105,12 @@ TEST(EDGE_SLOT, TwoEdges) {
         sig2.Edge.emit(1, 2);
         CHECK(slt.Counter == 0);
 
-        Connect(&sig1.Anchor, &sig1.Edge, &slt.Anchor, &slt.Slot);
+        Connect(&sig1, &sig1.Edge, &slt, &slt.Slot);
         sig1.Edge.emit(1, 2);
         sig2.Edge.emit(1, 2);
         CHECK(slt.Counter == 3);
 
-        Connect(&sig2.Anchor, &sig2.Edge, &slt.Anchor, &slt.Slot);
+        Connect(&sig2, &sig2.Edge, &slt, &slt.Slot);
         sig1.Edge.emit(1, 2);
         sig2.Edge.emit(1, 2);
         CHECK(slt.Counter == 9);
@@ -138,12 +130,12 @@ TEST(EDGE_SLOT, TwoSlots) {
         CHECK(slt1.Counter == 0);
         CHECK(slt2.Counter == 0);
 
-        Connect(&sig.Anchor, &sig.Edge, &slt1.Anchor, &slt1.Slot);
+        Connect(&sig, &sig.Edge, &slt1, &slt1.Slot);
         sig.Edge.emit(1, 2);
         CHECK(slt1.Counter == 3);
         CHECK(slt2.Counter == 0);
 
-        Connect(&sig.Anchor, &sig.Edge, &slt2.Anchor, &slt2.Slot);
+        Connect(&sig, &sig.Edge, &slt2, &slt2.Slot);
         sig.Edge.emit(1, 2);
         CHECK(slt1.Counter == 6);
         CHECK(slt2.Counter == 3);
@@ -158,12 +150,12 @@ TEST(EDGE_SLOT, EdgeThroughEdge) {
     TTestEdge sig1;
     TTestEdge sig2;
 
-    Connect(&sig1.Anchor, &sig1.Edge, &slt.Anchor, &slt.Slot);
+    Connect(&sig1, &sig1.Edge, &slt, &slt.Slot);
     CHECK(slt.Counter == 0);
     sig1.Edge.emit(1, 2);
     CHECK(slt.Counter == 3);
 
-    Connect(&sig2.Anchor, &sig2.Edge, &sig1.Anchor, &sig1.Edge);
+    Connect(&sig2, &sig2.Edge, &sig1, &sig1.Edge);
     sig2.Edge.emit(1, 2);
     CHECK(slt.Counter == 6);
 }
@@ -173,7 +165,7 @@ TEST(EDGE_SLOT, EdgeDisconnectSlot) {
     TTestSlot slt;
     TTestEdge sig;
 
-    Connect(&sig.Anchor, &sig.Edge, &slt.Anchor, &slt.Slot);
+    Connect(&sig, &sig.Edge, &slt, &slt.Slot);
 
     CHECK(slt.Counter == 0);
     sig.Edge.emit(1, 2);
@@ -188,7 +180,7 @@ TEST(EDGE_SLOT, SlotDisconnectEdge) {
     TTestSlot slt;
     TTestEdge sig;
 
-    Connect(&sig.Anchor, &sig.Edge, &slt.Anchor, &slt.Slot);
+    Connect(&sig, &sig.Edge, &slt, &slt.Slot);
 
     CHECK(slt.Counter == 0);
     sig.Edge.emit(1, 2);
@@ -203,8 +195,8 @@ TEST(EDGE_SLOT, MultipleConnect) {
     TTestSlot slt;
     TTestEdge sig;
 
-    Connect(&sig.Anchor, &sig.Edge, &slt.Anchor, &slt.Slot);
-    Connect(&sig.Anchor, &sig.Edge, &slt.Anchor, &slt.Slot);
+    Connect(&sig, &sig.Edge, &slt, &slt.Slot);
+    Connect(&sig, &sig.Edge, &slt, &slt.Slot);
 
     CHECK(slt.Counter == 0);
     sig.Edge.emit(1, 2);
@@ -215,8 +207,8 @@ TEST(EDGE_SLOT, EdgeDisconnectSlotOnce) {
     TTestSlot slt;
     TTestEdge sig;
 
-    Connect(&sig.Anchor, &sig.Edge, &slt.Anchor, &slt.Slot);
-    Connect(&sig.Anchor, &sig.Edge, &slt.Anchor, &slt.Slot);
+    Connect(&sig, &sig.Edge, &slt, &slt.Slot);
+    Connect(&sig, &sig.Edge, &slt, &slt.Slot);
 
     CHECK(slt.Counter == 0);
     sig.Edge.emit(1, 2);
@@ -235,8 +227,8 @@ TEST(EDGE_SLOT, SlotDisconnectEdgeOnce) {
     TTestSlot slt;
     TTestEdge sig;
 
-    Connect(&sig.Anchor, &sig.Edge, &slt.Anchor, &slt.Slot);
-    Connect(&sig.Anchor, &sig.Edge, &slt.Anchor, &slt.Slot);
+    Connect(&sig, &sig.Edge, &slt, &slt.Slot);
+    Connect(&sig, &sig.Edge, &slt, &slt.Slot);
 
     CHECK(slt.Counter == 0);
     sig.Edge.emit(1, 2);
@@ -255,8 +247,8 @@ TEST(EDGE_SLOT, EdgeDisconnectSlotMultiple) {
     TTestSlot slt;
     TTestEdge sig;
 
-    Connect(&sig.Anchor, &sig.Edge, &slt.Anchor, &slt.Slot);
-    Connect(&sig.Anchor, &sig.Edge, &slt.Anchor, &slt.Slot);
+    Connect(&sig, &sig.Edge, &slt, &slt.Slot);
+    Connect(&sig, &sig.Edge, &slt, &slt.Slot);
 
     CHECK(slt.Counter == 0);
     sig.Edge.emit(1, 2);
@@ -271,8 +263,8 @@ TEST(EDGE_SLOT, SlotDisconnectEdgeMultiple) {
     TTestSlot slt;
     TTestEdge sig;
 
-    Connect(&sig.Anchor, &sig.Edge, &slt.Anchor, &slt.Slot);
-    Connect(&sig.Anchor, &sig.Edge, &slt.Anchor, &slt.Slot);
+    Connect(&sig, &sig.Edge, &slt, &slt.Slot);
+    Connect(&sig, &sig.Edge, &slt, &slt.Slot);
 
     CHECK(slt.Counter == 0);
     sig.Edge.emit(1, 2);
@@ -287,8 +279,8 @@ TEST(EDGE_SLOT, EdgeDisconnectAllSlots) {
     TTestSlot slt;
     TTestEdge sig;
 
-    Connect(&sig.Anchor, &sig.Edge, &slt.Anchor, &slt.Slot);
-    Connect(&sig.Anchor, &sig.Edge, &slt.Anchor, &slt.Slot);
+    Connect(&sig, &sig.Edge, &slt, &slt.Slot);
+    Connect(&sig, &sig.Edge, &slt, &slt.Slot);
 
     CHECK(slt.Counter == 0);
     sig.Edge.emit(1, 2);
@@ -303,8 +295,8 @@ TEST(EDGE_SLOT, SlotDisconnectAllEdges) {
     TTestSlot slt;
     TTestEdge sig;
 
-    Connect(&sig.Anchor, &sig.Edge, &slt.Anchor, &slt.Slot);
-    Connect(&sig.Anchor, &sig.Edge, &slt.Anchor, &slt.Slot);
+    Connect(&sig, &sig.Edge, &slt, &slt.Slot);
+    Connect(&sig, &sig.Edge, &slt, &slt.Slot);
 
     CHECK(slt.Counter == 0);
     sig.Edge.emit(1, 2);
@@ -321,9 +313,9 @@ TEST(EDGE_SLOT, ProxyDisconnectSlot) {
     TTestEdge sig;
     TTestEdge proxy;
 
-    Connect(&sig.Anchor, &sig.Edge, &proxy.Anchor, &proxy.Edge);
-    Connect(&proxy.Anchor, &proxy.Edge, &slt1.Anchor, &slt1.Slot);
-    Connect(&proxy.Anchor, &proxy.Edge, &slt2.Anchor, &slt2.Slot);
+    Connect(&sig, &sig.Edge, &proxy, &proxy.Edge);
+    Connect(&proxy, &proxy.Edge, &slt1, &slt1.Slot);
+    Connect(&proxy, &proxy.Edge, &slt2, &slt2.Slot);
 
     CHECK(slt1.Counter == 0);
     CHECK(slt2.Counter == 0);
@@ -343,9 +335,9 @@ TEST(EDGE_SLOT, ProxyDisconnectAllSlots) {
     TTestEdge sig;
     TTestEdge proxy;
 
-    Connect(&sig.Anchor, &sig.Edge, &proxy.Anchor, &proxy.Edge);
-    Connect(&proxy.Anchor, &proxy.Edge, &slt1.Anchor, &slt1.Slot);
-    Connect(&proxy.Anchor, &proxy.Edge, &slt2.Anchor, &slt2.Slot);
+    Connect(&sig, &sig.Edge, &proxy, &proxy.Edge);
+    Connect(&proxy, &proxy.Edge, &slt1, &slt1.Slot);
+    Connect(&proxy, &proxy.Edge, &slt2, &slt2.Slot);
 
     CHECK(slt1.Counter == 0);
     CHECK(slt2.Counter == 0);
@@ -358,7 +350,7 @@ TEST(EDGE_SLOT, ProxyDisconnectAllSlots) {
     CHECK(slt1.Counter == 3);
     CHECK(slt2.Counter == 3);
 
-    Connect(&proxy.Anchor, &proxy.Edge, &slt1.Anchor, &slt1.Slot);
+    Connect(&proxy, &proxy.Edge, &slt1, &slt1.Slot);
     sig.Edge.emit(1, 2);
     CHECK(slt1.Counter == 6);
     CHECK(slt2.Counter == 3);
@@ -371,9 +363,9 @@ TEST(EDGE_SLOT, ProxyDisconnectEdge) {
     TTestEdge sig1;
     TTestEdge sig2;
 
-    Connect(&sig1.Anchor, &sig1.Edge, &proxy.Anchor, &proxy.Edge);
-    Connect(&sig2.Anchor, &sig2.Edge, &proxy.Anchor, &proxy.Edge);
-    Connect(&proxy.Anchor, &proxy.Edge, &slt.Anchor, &slt.Slot);
+    Connect(&sig1, &sig1.Edge, &proxy, &proxy.Edge);
+    Connect(&sig2, &sig2.Edge, &proxy, &proxy.Edge);
+    Connect(&proxy, &proxy.Edge, &slt, &slt.Slot);
 
     CHECK(slt.Counter == 0);
     sig1.Edge.emit(1, 2);
@@ -394,9 +386,9 @@ TEST(EDGE_SLOT, ProxyDisconnectAllEdges) {
     TTestEdge sig1;
     TTestEdge sig2;
 
-    Connect(&sig1.Anchor, &sig1.Edge, &proxy.Anchor, &proxy.Edge);
-    Connect(&sig2.Anchor, &sig2.Edge, &proxy.Anchor, &proxy.Edge);
-    Connect(&proxy.Anchor, &proxy.Edge, &slt.Anchor, &slt.Slot);
+    Connect(&sig1, &sig1.Edge, &proxy, &proxy.Edge);
+    Connect(&sig2, &sig2.Edge, &proxy, &proxy.Edge);
+    Connect(&proxy, &proxy.Edge, &slt, &slt.Slot);
 
     CHECK(slt.Counter == 0);
     sig1.Edge.emit(1, 2);
@@ -420,10 +412,10 @@ TEST(EDGE_SLOT, ProxyDisconnectAllEdgesAndSlots) {
     TTestEdge sig1;
     TTestEdge sig2;
 
-    Connect(&sig1.Anchor, &sig1.Edge, &proxy.Anchor, &proxy.Edge);
-    Connect(&sig2.Anchor, &sig2.Edge, &proxy.Anchor, &proxy.Edge);
-    Connect(&proxy.Anchor, &proxy.Edge, &slt1.Anchor, &slt1.Slot);
-    Connect(&proxy.Anchor, &proxy.Edge, &slt2.Anchor, &slt2.Slot);
+    Connect(&sig1, &sig1.Edge, &proxy, &proxy.Edge);
+    Connect(&sig2, &sig2.Edge, &proxy, &proxy.Edge);
+    Connect(&proxy, &proxy.Edge, &slt1, &slt1.Slot);
+    Connect(&proxy, &proxy.Edge, &slt2, &slt2.Slot);
 
     proxy.Edge.disconnect_all();
     CHECK(slt1.Counter == 0);
@@ -445,7 +437,7 @@ TEST(EDGE_SLOT, SlotDisconnectEdgeWhileEmitting) {
     };
     slt.Callback = cb;
 
-    Connect(&sig.Anchor, &sig.Edge, &slt.Anchor, &slt.Slot);
+    Connect(&sig, &sig.Edge, &slt, &slt.Slot);
 
     CHECK(slt.Counter == 0);
     sig.Edge.emit(1, 2);
@@ -465,7 +457,7 @@ TEST(EDGE_SLOT, EdgeDisconnectSlotWhileEmitting) {
     };
     slt.Callback = cb;
 
-    Connect(&sig.Anchor, &sig.Edge, &slt.Anchor, &slt.Slot);
+    Connect(&sig, &sig.Edge, &slt, &slt.Slot);
 
     CHECK(slt.Counter == 0);
     sig.Edge.emit(1, 2);
@@ -486,8 +478,8 @@ TEST(EDGE_SLOT, SlotDisconnectEdgeOnceWhileEmitting) {
     };
     slt.Callback = cb;
 
-    Connect(&sig.Anchor, &sig.Edge, &slt.Anchor, &slt.Slot);
-    Connect(&sig.Anchor, &sig.Edge, &slt.Anchor, &slt.Slot);
+    Connect(&sig, &sig.Edge, &slt, &slt.Slot);
+    Connect(&sig, &sig.Edge, &slt, &slt.Slot);
 
     CHECK(slt.Counter == 0);
     sig.Edge.emit(1, 2);
@@ -508,8 +500,8 @@ TEST(EDGE_SLOT, EdgeDisconnectSlotOnceWhileEmitting) {
     };
     slt.Callback = cb;
 
-    Connect(&sig.Anchor, &sig.Edge, &slt.Anchor, &slt.Slot);
-    Connect(&sig.Anchor, &sig.Edge, &slt.Anchor, &slt.Slot);
+    Connect(&sig, &sig.Edge, &slt, &slt.Slot);
+    Connect(&sig, &sig.Edge, &slt, &slt.Slot);
 
     CHECK(slt.Counter == 0);
     sig.Edge.emit(1, 2);
@@ -530,8 +522,8 @@ TEST(EDGE_SLOT, SlotDisconnectMultipleEdgesWhileEmitting) {
     };
     slt.Callback = cb;
 
-    Connect(&sig.Anchor, &sig.Edge, &slt.Anchor, &slt.Slot);
-    Connect(&sig.Anchor, &sig.Edge, &slt.Anchor, &slt.Slot);
+    Connect(&sig, &sig.Edge, &slt, &slt.Slot);
+    Connect(&sig, &sig.Edge, &slt, &slt.Slot);
 
     CHECK(slt.Counter == 0);
     sig.Edge.emit(1, 2);
@@ -552,8 +544,8 @@ TEST(EDGE_SLOT, EdgeDisconnectMultipleSlotsWhileEmitting) {
     };
     slt.Callback = cb;
 
-    Connect(&sig.Anchor, &sig.Edge, &slt.Anchor, &slt.Slot);
-    Connect(&sig.Anchor, &sig.Edge, &slt.Anchor, &slt.Slot);
+    Connect(&sig, &sig.Edge, &slt, &slt.Slot);
+    Connect(&sig, &sig.Edge, &slt, &slt.Slot);
 
     CHECK(slt.Counter == 0);
     sig.Edge.emit(1, 2);
@@ -566,7 +558,7 @@ TEST(EDGE_SLOT, EdgeDisconnectMultipleSlotsWhileEmitting) {
 
 TEST(EDGE_SLOT, Message) {
     TTestSlot slt;
-    TSignal<int, int> msg(slt.Anchor.GetLink(), &slt.Slot, 1, 2);
+    TSignal<int, int> msg(slt.GetAnchor().GetLink(), &slt.Slot, 1, 2);
     CHECK(slt.Counter == 0);
     msg.Consume();
     CHECK(slt.Counter == 3);
@@ -577,7 +569,7 @@ TEST(EDGE_SLOT, MailboxSingleThread) {
         TTestSlot slt;
 
         TMessagePtr msg(
-            new TSignal<int, int>(slt.Anchor.GetLink(), &slt.Slot, 1, 2));
+            new TSignal<int, int>(slt.GetAnchor().GetLink(), &slt.Slot, 1, 2));
         TEdgeSlotThread::LocalMailbox->enqueue(std::move(msg));
         CHECK(msg.get() == nullptr);
 
@@ -609,17 +601,17 @@ TEST(EDGE_SLOT, MailboxTwoThreads) {
 
     auto proc_enqueue = [&]() {
         TMessagePtr msg(
-            new TSignal<int, int>(slt.Anchor.GetLink(), &slt.Slot, 1, 2));
+            new TSignal<int, int>(slt.GetAnchor().GetLink(), &slt.Slot, 1, 2));
         boxlink.enqueue(std::move(msg));
         CHECK(msg.get() == nullptr);
     };
 
 
     CHECK(slt.Counter == 0);
-    std::thread run_dequeue(proc_dequeue);
     std::thread run_enqueue(proc_enqueue);
-    run_dequeue.join();
     run_enqueue.join();
+    std::thread run_dequeue(proc_dequeue);
+    run_dequeue.join();
     CHECK(slt.Counter == 3);
 }
 
@@ -653,9 +645,9 @@ TEST(EDGE_SLOT_THREAD, MoveObjectToThread) {
 
     TTestSlot slt;
     TTestEdge sig;
-    Connect(&sig.Anchor, &sig.Edge, &slt.Anchor, &slt.Slot);
+    Connect(&sig, &sig.Edge, &slt, &slt.Slot);
 
-    slt.Anchor.MoveToThread(&thr);
+    thr.GrabObject(&slt);
 
     sig.Edge.emit(1, 2);
     thr.PostQuitMessage();
