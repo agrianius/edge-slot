@@ -21,12 +21,12 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE  OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-#include <CppUTest/MemoryLeakDetectorNewMacros.h>
-#include <CppUTest/TestHarness.h>
-
-
 #include "edge_slot.hh"
 #include <thread>
+
+
+#include <CppUTest/MemoryLeakDetectorNewMacros.h>
+#include <CppUTest/TestHarness.h>
 
 
 using bsc::Connect;
@@ -49,6 +49,20 @@ public:
     }
 
     DEFINE_SLOT(TTestSlot, test_slot_func, Slot);
+
+    ui32 Counter = 0;
+};
+
+
+class TCheckMailboxTestSlot: public TEdgeSlotObject {
+public:
+    void test_slot_func(int a, int b) {
+        CHECK(GetAnchor().GetLink()->SameMailbox());
+
+        Counter += a + b;
+    }
+
+    DEFINE_SLOT(TCheckMailboxTestSlot, test_slot_func, Slot);
 
     ui32 Counter = 0;
 };
@@ -77,6 +91,10 @@ public:
 
 
 TEST_GROUP(EDGE_SLOT) {
+    void setup() {
+        TEdgeSlotThread::LocalMailbox = std::make_shared<TMailbox>();
+    }
+
     void teardown() {
         TEdgeSlotThread::LocalMailbox.reset();
     }
@@ -535,8 +553,12 @@ TEST(EDGE_SLOT, SlotDisconnectMultipleEdgesWhileEmitting) {
 }
 
 TEST(EDGE_SLOT, EdgeDisconnectMultipleSlotsWhileEmitting) {
+
+
     TCallbackSlot slt;
     TTestEdge sig;
+
+    CHECK(slt.GetAnchor().GetLink()->GetMailbox().get() != nullptr);
 
     auto cb = [&](){
         sig.Edge.disconnect_all(&slt.Slot);
@@ -643,13 +665,31 @@ TEST(EDGE_SLOT_THREAD, CreateSimple) {
 TEST(EDGE_SLOT_THREAD, MoveObjectToThread) {
     TEdgeSlotThread thr;
 
-    TTestSlot slt;
+    TCheckMailboxTestSlot slt;
     TTestEdge sig;
     Connect(&sig, &sig.Edge, &slt, &slt.Slot);
 
     thr.GrabObject(&slt);
 
     sig.Edge.emit(1, 2);
+    thr.PostQuitMessage();
+    thr.join();
+
+    CHECK(slt.Counter == 3);
+}
+
+TEST(EDGE_SLOT_THREAD, BlockingDelivery) {
+    TEdgeSlotThread thr;
+
+    TCheckMailboxTestSlot slt;
+    TTestEdge sig;
+    Connect(&sig, &sig.Edge, &slt, &slt.Slot, bsc::DELIVERY::BLOCK_QUEUE);
+
+    thr.GrabObject(&slt);
+
+    sig.Edge.emit(1, 2);
+    CHECK(slt.Counter == 3);
+
     thr.PostQuitMessage();
     thr.join();
 

@@ -55,7 +55,7 @@ public:
 };
 
 
-using TMessagePtr = std::unique_ptr<IMessage>;
+using TMessagePtr = std::shared_ptr<IMessage>;
 
 
 class TMailbox {
@@ -174,7 +174,7 @@ protected:
 
 class TObjectMonitor {
 public:
-    TObjectMonitor() noexcept
+    TObjectMonitor()
         : RefCounter(1)
         , Mailbox(TEdgeSlotThread::LocalMailbox)
     {}
@@ -461,6 +461,27 @@ protected:
 };
 
 
+class TBlockSignal: public IMessage {
+public:
+    TBlockSignal(TMessagePtr payload)
+        : Payload(std::move(payload))
+    {}
+
+    virtual void Consume() override {
+        Payload->Consume();
+        Event.Post();
+    }
+
+    void Wait() noexcept {
+        Event.Wait();
+    }
+
+protected:
+    TMessagePtr Payload;
+    TSemaphore Event;
+};
+
+
 template <typename TDest, typename TApart>
 class THalfDisconnectMsg: public TObjectMessage {
 public:
@@ -489,17 +510,27 @@ protected:
 };
 
 
+enum class DELIVERY {
+    AUTO,
+    DIRECT,
+    QUEUE,
+    BLOCK_QUEUE,
+};
+
+
 template <typename TDest, typename TApart>
 class THalfConnectMsg: public TObjectMessage {
 public:
     THalfConnectMsg(TMonitorPtr dest_link,
                     TDest* dest,
                     TMonitorPtr apart_link,
-                    TApart* apart)
+                    TApart* apart,
+                    DELIVERY type = DELIVERY::AUTO)
         : TObjectMessage(std::move(dest_link))
         , Dest(dest)
         , ApartLink(std::move(apart_link))
         , Apart(apart)
+        , Type(type)
     {}
 
     virtual ~THalfConnectMsg() noexcept {
@@ -514,7 +545,7 @@ public:
 
         if (ObjectLink->IsAlive()) {
             Dest->half_connect(
-                std::move(ObjectLink), std::move(ApartLink), Apart);
+                std::move(ObjectLink), std::move(ApartLink), Apart, Type);
             return;
         }
 
@@ -535,6 +566,7 @@ protected:
     TDest* Dest;
     TMonitorPtr ApartLink;
     TApart* Apart;
+    DELIVERY Type;
     bool Delivered = false;
 };
 
@@ -545,17 +577,19 @@ public:
     TFullConnectMsg(TMonitorPtr dest_link,
                     TSlot<TParams...>* dest,
                     TMonitorPtr apart_link,
-                    TEdge<TParams...>* apart)
+                    TEdge<TParams...>* apart,
+                    DELIVERY type = DELIVERY::AUTO)
         : TObjectMessage(std::move(dest_link))
         , Dest(dest)
         , ApartLink(std::move(apart_link))
         , Apart(apart)
+        , Type(type)
     {}
 
     virtual void Consume() override {
         if (!ObjectLink->IsAlive() || !ApartLink->IsAlive())
             return;
-        Dest->connect(std::move(ObjectLink), std::move(ApartLink), Apart);
+        Dest->connect(std::move(ObjectLink), std::move(ApartLink), Apart, Type);
     }
 
     template <typename...Types>
@@ -567,6 +601,7 @@ protected:
     TSlot<TParams...>* Dest;
     TMonitorPtr ApartLink;
     TEdge<TParams...>* Apart;
+    DELIVERY Type;
 };
 
 
@@ -620,14 +655,15 @@ public:
 
     void connect(TMonitorPtr slot_link,
                  TMonitorPtr edge_link,
-                 TEdge<TParams...>* edge)
+                 TEdge<TParams...>* edge,
+                 DELIVERY type = DELIVERY::AUTO)
     {
         if (slot_link->SameMailbox()) {
             half_connect(slot_link, edge_link, edge);
-            edge->half_connect(edge_link, slot_link, this);
+            edge->half_connect(edge_link, slot_link, this, type);
         } else {
             TFullConnectMsg<TParams...>::
-                Send(slot_link, this, edge_link, edge);
+                Send(slot_link, this, edge_link, edge, type);
         }
     }
 
@@ -650,14 +686,18 @@ protected:
 
     friend class TSignal<TParams...>;
 
-    void half_connect(TMonitorPtr edge_link, TEdge<TParams...>* edge) {
+    void half_connect(TMonitorPtr edge_link,
+                      TEdge<TParams...>* edge,
+                      DELIVERY = DELIVERY::AUTO)
+    {
         SlotConnections.emplace_back(
             TSlotConnection{std::move(edge_link), edge});
     }
 
     void half_connect(TMonitorPtr slot_link,
                       TMonitorPtr edge_link,
-                      TEdge<TParams...>* edge)
+                      TEdge<TParams...>* edge,
+                      DELIVERY = DELIVERY::AUTO)
     {
         if (slot_link->SameMailbox()) {
             half_connect(std::move(edge_link), edge);
@@ -717,13 +757,55 @@ public:
         // do not emit signal to connections appeared while emitting
         auto size = EdgeConnections.size();
 
+        TMessagePtr msg;
+
         for (size_t i = 0; i < size; ++i) {
             const auto& elem = EdgeConnections[i];
             if (elem.Slot == nullptr)
                 continue;
             if (!elem.ObjectLink->IsAlive())
                 continue;
-            elem.Slot->receive(params...);
+
+            auto mbox = elem.ObjectLink->GetMailbox();
+
+            switch (elem.Type) {
+            case DELIVERY::AUTO:
+                if (mbox.get() == TEdgeSlotThread::LocalMailbox.get()) {
+                    elem.Slot->receive(params...);
+                    continue;
+                }
+                // fall through
+            case DELIVERY::QUEUE:
+                if (mbox.get() == nullptr)
+                    continue;
+
+                if (msg.get() == nullptr)
+                    msg = std::make_shared<TSignal<TParams...>>(
+                            elem.ObjectLink, elem.Slot, params...);
+
+                mbox->enqueue(msg);
+                break;
+
+            case DELIVERY::DIRECT:
+                elem.Slot->receive(params...);
+                break;
+
+            case DELIVERY::BLOCK_QUEUE:
+                {
+                    if (mbox.get() == nullptr)
+                        continue;
+
+                    if (msg.get() == nullptr)
+                        msg = std::make_shared<TSignal<TParams...>>(
+                                elem.ObjectLink, elem.Slot, params...);
+
+                    std::shared_ptr<TBlockSignal> block =
+                            std::make_shared<TBlockSignal>(msg);
+                    mbox->enqueue(block);
+                    block->Wait();
+                }
+                break;
+            }
         }
 
         if (NeedCleanup) {
@@ -825,20 +907,25 @@ protected:
     friend class THalfDisconnectMsg;
 
 
-    void half_connect(TMonitorPtr slot_link, TSlot<TParams...>* slot) {
+    void half_connect(TMonitorPtr slot_link,
+                      TSlot<TParams...>* slot,
+                      DELIVERY type = DELIVERY::AUTO)
+    {
         EdgeConnections.emplace_back(
-                TEdgeConnection{std::move(slot_link), slot});
+                TEdgeConnection{std::move(slot_link), slot, type});
     }
 
     void half_connect(TMonitorPtr edge_link,
                       TMonitorPtr slot_link,
-                      TSlot<TParams...>* slot)
+                      TSlot<TParams...>* slot,
+                      DELIVERY type = DELIVERY::AUTO)
     {
         if (edge_link->SameMailbox())
-            half_connect(std::move(slot_link), slot);
+            half_connect(std::move(slot_link), slot, type);
         else
             THalfConnectMsg<TEdge<TParams...>, TSlot<TParams...>>::
-                Send(std::move(edge_link), this, std::move(slot_link), slot);
+                Send(std::move(edge_link), this,
+                     std::move(slot_link), slot, type);
     }
 
     void half_disconnect(TSlot<TParams...>* slot) {
@@ -880,6 +967,7 @@ protected:
     struct TEdgeConnection {
         TMonitorPtr ObjectLink;
         TSlot<TParams...>* Slot;
+        DELIVERY Type;
     };
 
     mutable bool DontErase = false;
@@ -916,12 +1004,14 @@ template <typename TEdgeContainer, typename TSlotContainer, typename...TParams>
 void Connect(const TEdgeContainer* edge_object,
              TEdge<TParams...>* edge,
              const TSlotContainer* slot_object,
-             TSlot<TParams...>* slot)
+             TSlot<TParams...>* slot,
+             DELIVERY type = DELIVERY::AUTO)
 {
     slot->connect(
         slot_object->GetAnchor().GetLink(),
         edge_object->GetAnchor().GetLink(),
-        edge);
+        edge,
+        type);
 }
 
 
