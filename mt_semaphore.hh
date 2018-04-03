@@ -53,6 +53,24 @@ public:
         ESyscallError::Validate(res, "sem_wait");
     }
 
+    bool Wait(ui64 wait_time) {
+        timespec ts;
+        ::clock_gettime(CLOCK_REALTIME, &ts);
+
+        ts.tv_sec += wait_time / 1000000;
+        ts.tv_nsec += (wait_time % 1000000) * 1000;
+        if (ts.tv_nsec > 1000000000) {
+            ++ts.tv_sec;
+            ts.tv_nsec -= 1000000000;
+        }
+
+        int res = sem_timedwait(&Sem, &ts);
+        if (res == -1 && errno == ETIMEDOUT)
+            return true;
+        ESyscallError::Validate(res, "sem_wait");
+        return false;
+    }
+
     bool TryWait() {
         int res = sem_trywait(&Sem);
         if (res != 1)

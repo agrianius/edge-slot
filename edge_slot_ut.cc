@@ -34,8 +34,9 @@ using bsc::GetCallee;
 using bsc::IMessage;
 using bsc::MPSC_TailSwap;
 using bsc::TEdge;
-using bsc::TEdgeSlotThread;
 using bsc::TEdgeSlotObject;
+using bsc::TEdgeSlotThread;
+using bsc::TEdgeSlotTimer;
 using bsc::TMailbox;
 using bsc::TMessagePtr;
 using bsc::TObjectMessage;
@@ -73,6 +74,15 @@ public:
     TEdge<int, int> Edge = TEdge<int, int>(this);
 };
 
+class TTriggerPostQuitMessage: public TEdgeSlotObject {
+public:
+	void timeout() {
+		TEdgeSlotThread::PostSelfQuitMessage();
+	}
+
+	DEFINE_SLOT(TTriggerPostQuitMessage, timeout, Slot);
+};
+
 
 class TCallbackSlot: public TEdgeSlotObject {
 public:
@@ -97,8 +107,10 @@ TEST_GROUP(EDGE_SLOT) {
 
     void teardown() {
         TEdgeSlotThread::LocalMailbox.reset();
+        TEdgeSlotThread::CleanupTimers();
     }
 };
+
 
 TEST(EDGE_SLOT, ConnectAndEmit) {
     TTestEdge sig;
@@ -639,8 +651,13 @@ TEST(EDGE_SLOT, MailboxTwoThreads) {
 
 
 TEST_GROUP(EDGE_SLOT_THREAD) {
+    void setup() {
+        TEdgeSlotThread::LocalMailbox = std::make_shared<TMailbox>();
+    }
+
     void teardown() {
         TEdgeSlotThread::LocalMailbox.reset();
+        TEdgeSlotThread::CleanupTimers();
     }
 };
 
@@ -694,4 +711,14 @@ TEST(EDGE_SLOT_THREAD, BlockingDelivery) {
     thr.join();
 
     CHECK(slt.Counter == 3);
+}
+
+TEST(EDGE_SLOT, Timer) {
+	TEdgeSlotTimer timer(100000);
+	TTriggerPostQuitMessage slt;
+
+	Connect(&timer, &timer.Timeout, &slt, &slt.Slot);
+	timer.Activate();
+
+	TEdgeSlotThread::MessageLoop();
 }
