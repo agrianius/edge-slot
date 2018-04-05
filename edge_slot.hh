@@ -188,6 +188,9 @@ public:
     template <typename...TParams>
     static void WaitForDisconnected(TSlot<TParams...>* slot) noexcept;
 
+    template <typename...TParams>
+    static void WaitForConnected(TSlot<TParams...>* slot) noexcept;
+
 protected:
     std::shared_ptr<TMailbox> Mailbox;
     std::thread Thread;
@@ -620,13 +623,13 @@ protected:
 };
 
 
-template <typename...TParams>
+template <typename TDest, typename TApart>
 class TFullConnectMsg: public TObjectMessage {
 public:
     TFullConnectMsg(TMonitorPtr dest_link,
-                    TSlot<TParams...>* dest,
+                    TDest* dest,
                     TMonitorPtr apart_link,
-                    TEdge<TParams...>* apart,
+                    TApart* apart,
                     DELIVERY type = DELIVERY::AUTO)
         : TObjectMessage(std::move(dest_link))
         , Dest(dest)
@@ -647,9 +650,9 @@ public:
         msg->JustSend();
     }
 protected:
-    TSlot<TParams...>* Dest;
+    TDest* Dest;
     TMonitorPtr ApartLink;
-    TEdge<TParams...>* Apart;
+    TApart* Apart;
     DELIVERY Type;
 };
 
@@ -761,7 +764,7 @@ public:
             half_connect(slot_link, edge_link, edge);
             edge->half_connect(edge_link, slot_link, this, type);
         } else {
-            TFullConnectMsg<TParams...>::
+            TFullConnectMsg<TSlot<TParams...>, TEdge<TParams...>>::
                 Send(slot_link, this, edge_link, edge, type);
         }
     }
@@ -1047,6 +1050,20 @@ public:
         disconnect_all_slots();
     }
 
+    void connect(TMonitorPtr edge_link,
+                 TMonitorPtr slot_link,
+                 TSlot<TParams...>* slot,
+                 DELIVERY type = DELIVERY::AUTO)
+    {
+        if (edge_link->SameMailbox()) {
+            half_connect(edge_link, slot_link, slot, type);
+            slot->half_connect(slot_link, edge_link, this);
+        } else {
+            TFullConnectMsg<TEdge<TParams...>, TSlot<TParams...>>::
+                Send(edge_link, this, slot_link, slot, type);
+        }
+    }
+
 protected:
     template <typename...>
     friend class TSlot;
@@ -1168,10 +1185,10 @@ void Connect(const TEdgeContainer* edge_object,
              TSlot<TParams...>* slot,
              DELIVERY type = DELIVERY::AUTO)
 {
-    slot->connect(
-        slot_object->GetAnchor().GetLink(),
+    edge->connect(
         edge_object->GetAnchor().GetLink(),
-        edge,
+        slot_object->GetAnchor().GetLink(),
+        slot,
         type);
 }
 
@@ -1322,48 +1339,6 @@ protected:
 };
 
 
-WEAK void TActivateTimerSignal::Consume() {
-    if (!ObjectLink->IsAlive())
-        return;
-    Timer->Activate(std::move(ObjectLink));
-}
-
-
-WEAK void TDeactivateTimerSignal::Consume() {
-    if (!ObjectLink->IsAlive())
-        return;
-    Timer->Deactivate(std::move(ObjectLink));
-}
-
-
-WEAK void TEdgeSlotThread::RegisterTimer(TEdgeSlotTimer* timer) {
-    UnregisterTimer(timer);
-    for (auto i = ActiveTimers.begin(); i != ActiveTimers.end(); ++i) {
-        if (timer->GetNextHitTime() >= (*i)->GetNextHitTime())
-            continue;
-        ActiveTimers.insert(i, timer);
-        return;
-    }
-    ActiveTimers.push_back(timer);
-}
-
-
-WEAK void TEdgeSlotThread::UnregisterTimer(TEdgeSlotTimer* timer) {
-    for (auto i = ActiveTimers.begin(); i != ActiveTimers.end(); ++i) {
-        if (timer != *i)
-            continue;
-        ActiveTimers.erase(i);
-        break;
-    }
-}
-
-
-WEAK void TEdgeSlotThread::ThreadMessageLoop(TEdgeSlotThread* self) noexcept {
-	LocalMailbox = self->Mailbox;
-	MessageLoop();
-}
-
-
 template <typename Fn>
 void TEdgeSlotThread::MessageLoop(Fn&& condition) noexcept {
     for (;;) {
@@ -1423,6 +1398,8 @@ bool TEdgeSlotThread::WaitForSignal(
 	TCatcher catcher;
 	Connect(object, edge, &catcher, &catcher.CatchSlot);
 
+	TEdgeSlotThread::WaitForConnected(&catcher.CatchSlot);
+
 	if (!start())
 	    return false;
 
@@ -1440,6 +1417,16 @@ template <typename...TParams>
 void TEdgeSlotThread::WaitForDisconnected(TSlot<TParams...>* slot) noexcept {
     auto connect_checker = [&]() -> bool {
         return slot->is_connected();
+    };
+
+    MessageLoop(connect_checker);
+}
+
+
+template <typename...TParams>
+void TEdgeSlotThread::WaitForConnected(TSlot<TParams...>* slot) noexcept {
+    auto connect_checker = [&]() -> bool {
+        return !slot->is_connected();
     };
 
     MessageLoop(connect_checker);

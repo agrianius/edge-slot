@@ -32,4 +32,46 @@ TEdgeSlotThread::LocalMailbox = std::make_shared<TMailbox>();
 thread_local std::vector<TEdgeSlotTimer*> TEdgeSlotThread::ActiveTimers;
 
 
+void TActivateTimerSignal::Consume() {
+    if (!ObjectLink->IsAlive())
+        return;
+    Timer->Activate(std::move(ObjectLink));
+}
+
+
+void TDeactivateTimerSignal::Consume() {
+    if (!ObjectLink->IsAlive())
+        return;
+    Timer->Deactivate(std::move(ObjectLink));
+}
+
+
+void TEdgeSlotThread::RegisterTimer(TEdgeSlotTimer* timer) {
+    UnregisterTimer(timer);
+    for (auto i = ActiveTimers.begin(); i != ActiveTimers.end(); ++i) {
+        if (timer->GetNextHitTime() >= (*i)->GetNextHitTime())
+            continue;
+        ActiveTimers.insert(i, timer);
+        return;
+    }
+    ActiveTimers.push_back(timer);
+}
+
+
+void TEdgeSlotThread::UnregisterTimer(TEdgeSlotTimer* timer) {
+    for (auto i = ActiveTimers.begin(); i != ActiveTimers.end(); ++i) {
+        if (timer != *i)
+            continue;
+        ActiveTimers.erase(i);
+        break;
+    }
+}
+
+
+void TEdgeSlotThread::ThreadMessageLoop(TEdgeSlotThread* self) noexcept {
+    LocalMailbox = self->Mailbox;
+    MessageLoop();
+}
+
+
 } // namespace bsc
