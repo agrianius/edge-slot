@@ -979,7 +979,7 @@ public:
         if (edge_link->SameMailbox())
             disconnect(std::move(slot_link), slot);
         else
-            TFullDisconnectMsg<TSlot<TParams...>, TEdge<TParams...>>::
+            TFullDisconnectMsg<TEdge<TParams...>, TSlot<TParams...>>::
                 Send(std::move(edge_link), this, std::move(slot_link), slot);
     }
 
