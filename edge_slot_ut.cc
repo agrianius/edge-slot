@@ -723,6 +723,7 @@ TEST(EDGE_SLOT, Timer) {
 	TEdgeSlotThread::MessageLoop();
 }
 
+
 TEST(EDGE_SLOT, WaitForSignal) {
     TEdgeSlotTimer timer(100000);
 
@@ -735,6 +736,7 @@ TEST(EDGE_SLOT, WaitForSignal) {
         TEdgeSlotThread::WaitForSignal(&timer, &timer.Timeout, starter);
     CHECK(catched);
 }
+
 
 TEST(EDGE_SLOT, WaifForSignalAndDeleteEdge) {
     std::unique_ptr<TTestEdge> sig(new TTestEdge);
