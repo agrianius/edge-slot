@@ -24,8 +24,9 @@ SOFTWARE.
 
 #pragma once
 #include "syscall.hh"
-
+#include <time.h>
 #include <semaphore.h>
+
 
 namespace bsc {
 

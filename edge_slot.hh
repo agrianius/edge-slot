@@ -173,6 +173,7 @@ public:
     }
 
     static void RegisterTimer(TEdgeSlotTimer* timer);
+    static void UnregisterTimer(TEdgeSlotTimer* timer);
 
     static void CleanupTimers() noexcept {
     	ActiveTimers.clear();
@@ -183,6 +184,9 @@ public:
     template <typename Fn, typename...TParams>
     static bool WaitForSignal(
 	    TEdgeSlotObject* object, TEdge<TParams...>* edge, Fn&& start) noexcept;
+
+    template <typename...TParams>
+    static void WaitForDisconnected(TSlot<TParams...>* slot) noexcept;
 
 protected:
     std::shared_ptr<TMailbox> Mailbox;
@@ -403,6 +407,8 @@ private:
     }
 
     TObjectMonitor* Monitor;
+
+    template <typename...TParams> friend class TSlot;
 };
 
 
@@ -522,17 +528,20 @@ template <typename TDest, typename TApart>
 class THalfDisconnectMsg: public TObjectMessage {
 public:
     THalfDisconnectMsg(TMonitorPtr dest_link,
-                           TDest* dest,
-                           TApart* apart)
+                       TDest* dest,
+                       TMonitorPtr apart_link,
+                       TApart* apart)
         : TObjectMessage(std::move(dest_link))
         , Dest(dest)
+        , ApartLink(std::move(apart_link))
         , Apart(apart)
     {}
 
     virtual void Consume() override {
         if (!ObjectLink->IsAlive())
             return;
-        Dest->half_disconnect(std::move(ObjectLink), Apart);
+        Dest->half_disconnect(
+            std::move(ObjectLink), std::move(ApartLink), Apart);
     }
 
     template <typename...TParams>
@@ -542,6 +551,7 @@ public:
     }
 protected:
     TDest* Dest;
+    TMonitorPtr ApartLink;
     TApart* Apart;
 };
 
@@ -569,12 +579,14 @@ public:
         , Type(type)
     {}
 
+
     virtual ~THalfConnectMsg() noexcept {
-        if (!Delivered) {
-            THalfDisconnectMsg<TApart, TDest>::Send(
-                    std::move(ApartLink), Apart, Dest);
-        }
+        if (Delivered)
+            return;
+        THalfDisconnectMsg<TApart, TDest>::Send(
+            std::move(ApartLink), Apart, std::move(ObjectLink), Dest);
     }
+
 
     virtual void Consume() override {
         Delivered = true;
@@ -589,8 +601,9 @@ public:
             return;
 
         THalfDisconnectMsg<TApart, TDest>::Send(
-                std::move(ApartLink), Apart, Dest);
+            std::move(ApartLink), Apart, std::move(ObjectLink), Dest);
     }
+
 
     template <typename...TParams>
     static void Send(TParams&&...params) {
@@ -641,13 +654,13 @@ protected:
 };
 
 
-template <typename...TParams>
+template <typename TDest, typename TApart>
 class TFullDisconnectMsg: public TObjectMessage {
 public:
     TFullDisconnectMsg(TMonitorPtr dest_link,
-                       TSlot<TParams...>* dest,
+                       TDest* dest,
 					   TMonitorPtr edge_link,
-                       TEdge<TParams...>* apart)
+                       TApart* apart)
         : TObjectMessage(std::move(dest_link))
         , Dest(dest)
 		, ApartLink(std::move(edge_link))
@@ -662,40 +675,44 @@ public:
 
     template <typename...Types>
     static void Send(Types&&...params) {
-        auto msg = new TFullDisconnectMsg(std::forward<Types>(params)...);
+        auto msg = new TFullDisconnectMsg<TDest, TApart>(
+                std::forward<Types>(params)...);
         msg->JustSend();
     }
 
 protected:
-    TSlot<TParams...>* Dest;
+    TDest* Dest;
     TMonitorPtr ApartLink;
-    TEdge<TParams...>* Apart;
+    TApart* Apart;
 };
 
 
 #define DEFINE_SLOT(TObject, Method, SlotName)                                \
     typename decltype(bsc::GetCallee(&TObject::Method))::TSlotType SlotName = \
         decltype(bsc::GetCallee(&TObject::Method))::                          \
-            template GetSlot<&TObject::Method>(this);
+            template GetSlot<&TObject::Method>(this)
 
 
 template <typename...TParams>
 class TSlot {
 public:
-    TSlot(void* object, TConnectCallee<TParams...> slot)
+    template <typename TObject>
+    TSlot(TObject* object, TConnectCallee<TParams...> slot)
         : Object(object)
+        , Link(static_cast<TEdgeSlotObject*>(object)->GetAnchor().Monitor)
         , Slot(slot)
     {}
 
     ~TSlot() {
         for (auto& i: SlotConnections)
-            i.Edge->half_disconnect(i.ObjectLink, this);
+            i.Edge->half_disconnect(i.ObjectLink, TMonitorPtr(Link), this);
     }
 
     void disconnect(TMonitorPtr edge_link, TEdge<TParams...>* edge) {
         for (auto i = SlotConnections.begin(); i != SlotConnections.end(); ++i)
             if (i->Edge == edge && i->ObjectLink == edge_link) {
-                edge->half_disconnect(std::move(i->ObjectLink), this);
+                edge->half_disconnect(
+                        std::move(i->ObjectLink), TMonitorPtr(Link), this);
                 SlotConnections.erase(i);
                 break;
             }
@@ -708,7 +725,7 @@ public:
     	if (slot_link->SameMailbox())
     		disconnect(std::move(edge_link), edge);
     	else
-    		TFullDisconnectMsg<TParams...>::
+    		TFullDisconnectMsg<TSlot<TParams...>, TEdge<TParams...>>::
 				Send(std::move(slot_link), this, std::move(edge_link), edge);
     }
 
@@ -719,7 +736,9 @@ public:
                 continue;
             }
             edge->half_disconnect(
-                std::move(SlotConnections[i].ObjectLink), this);
+                std::move(SlotConnections[i].ObjectLink),
+                TMonitorPtr(Link),
+                this);
             SlotConnections.erase(SlotConnections.begin() + i);
         }
     }
@@ -727,7 +746,8 @@ public:
     void disconnect_all() {
         for (auto i = SlotConnections.begin(); i != SlotConnections.end(); ++i)
         {
-            i->Edge->half_disconnect(std::move(i->ObjectLink), this);
+            i->Edge->half_disconnect(
+                    std::move(i->ObjectLink), TMonitorPtr(Link), this);
         }
         SlotConnections.clear();
     }
@@ -790,20 +810,23 @@ protected:
         }
     }
 
-    void half_disconnect(TEdge<TParams...>* edge) {
+    void half_disconnect(TMonitorPtr edge_link, TEdge<TParams...>* edge) {
         for (auto i = SlotConnections.begin(); i != SlotConnections.end(); ++i)
-            if (i->Edge == edge) {
+            if (i->Edge == edge && i->ObjectLink == edge_link) {
                 SlotConnections.erase(i);
                 break;
             }
     }
 
-    void half_disconnect(TMonitorPtr slot_link, TEdge<TParams...>* edge) {
+    void half_disconnect(TMonitorPtr slot_link,
+                         TMonitorPtr edge_link,
+                         TEdge<TParams...>* edge)
+    {
         if (!slot_link->SameMailbox())
             THalfDisconnectMsg<TSlot<TParams...>, TEdge<TParams...>>::
-                Send(std::move(slot_link), this, edge);
+                Send(std::move(slot_link), this, std::move(edge_link), edge);
         else
-            half_disconnect(edge);
+            half_disconnect(std::move(edge_link), edge);
     }
 
     TConnectCallee<TParams...> get_callee() const noexcept {
@@ -816,6 +839,7 @@ protected:
     };
 
     void* Object;
+    TObjectMonitor* Link;
     const TConnectCallee<TParams...> Slot;
     std::vector<TSlotConnection> SlotConnections;
 
@@ -828,11 +852,15 @@ protected:
 template <typename...TParams>
 class TEdge: public TSlot<TParams...> {
 public:
-    TEdge(void* object): TSlot<TParams...>(object, &forward_callee) {}
+    template <typename TObject>
+    TEdge(TObject* object)
+        : TSlot<TParams...>(object, &forward_callee)
+    {}
 
     ~TEdge() {
         for (const auto& i: EdgeConnections)
-            i.Slot->half_disconnect(i.ObjectLink, this);
+            i.Slot->half_disconnect(
+                i.ObjectLink, TMonitorPtr(TSlot<TParams...>::Link), this);
     }
 
     void emit(TParams...params) const {
@@ -903,10 +931,15 @@ public:
         DontErase = false;
     }
 
+
     void disconnect(TSlot<TParams...>* slot) {
         for (auto i = EdgeConnections.begin(); i != EdgeConnections.end(); ++i)
             if (i->Slot == slot && !i->ObjectLink.empty()) {
-                slot->half_disconnect(std::move(i->ObjectLink), this);
+                slot->half_disconnect(
+                        std::move(i->ObjectLink),
+                        TMonitorPtr(TSlot<TParams...>::Link),
+                        this);
+
                 if (DontErase) {
                     i->Slot = nullptr;
                     i->ObjectLink.reset();
@@ -916,6 +949,38 @@ public:
                 }
                 break;
             }
+    }
+
+
+    void disconnect(TMonitorPtr slot_link, TSlot<TParams...>* slot) {
+        for (auto i = EdgeConnections.begin(); i != EdgeConnections.end(); ++i)
+            if (i->Slot == slot && slot_link == i->ObjectLink) {
+                slot->half_disconnect(
+                        std::move(i->ObjectLink),
+                        TMonitorPtr(TSlot<TParams...>::Link),
+                        this);
+
+                if (DontErase) {
+                    i->Slot = nullptr;
+                    i->ObjectLink.reset();
+                    NeedCleanup = true;
+                } else {
+                    EdgeConnections.erase(i);
+                }
+                break;
+            }
+    }
+
+
+    void disconnect(TMonitorPtr edge_link,
+                    TMonitorPtr slot_link,
+                    TSlot<TParams...>* slot)
+    {
+        if (edge_link->SameMailbox())
+            disconnect(std::move(slot_link), slot);
+        else
+            TFullDisconnectMsg<TSlot<TParams...>, TEdge<TParams...>>::
+                Send(std::move(edge_link), this, std::move(slot_link), slot);
     }
 
     using TSlot<TParams...>::disconnect;
@@ -931,7 +996,12 @@ public:
                 ++i;
                 continue;
             }
-            slot->half_disconnect(std::move(elem.ObjectLink), this);
+
+            slot->half_disconnect(
+                std::move(elem.ObjectLink),
+                TMonitorPtr(TSlot<TParams...>::Link),
+                this);
+
             if (DontErase) {
                 elem.Slot = nullptr;
                 elem.ObjectLink.reset();
@@ -950,7 +1020,12 @@ public:
         {
             if (i->Slot == nullptr)
                 continue;
-            i->Slot->half_disconnect(i->ObjectLink, this);
+
+            i->Slot->half_disconnect(
+                i->ObjectLink,
+                TMonitorPtr(TSlot<TParams...>::Link),
+                this);
+
             if (!DontErase)
                 continue;
             i->Slot = nullptr;
@@ -1011,14 +1086,14 @@ protected:
                      std::move(slot_link), slot, type);
     }
 
-    void half_disconnect(TSlot<TParams...>* slot) {
+    void half_disconnect(TMonitorPtr slot_link, TSlot<TParams...>* slot) {
         for (auto i = EdgeConnections.begin();
                 i != EdgeConnections.end();
                 ++i)
         {
             if (i->Slot != slot)
                 continue;
-            if (i->ObjectLink.empty())
+            if (i->ObjectLink != slot_link)
                 continue;
             if (DontErase) {
                 i->Slot = nullptr;
@@ -1031,12 +1106,15 @@ protected:
         }
     }
 
-    void half_disconnect(TMonitorPtr edge_link, TSlot<TParams...>* slot) {
+    void half_disconnect(TMonitorPtr edge_link,
+                         TMonitorPtr slot_link,
+                         TSlot<TParams...>* slot)
+    {
         if (edge_link->SameMailbox())
-            half_disconnect(slot);
+            half_disconnect(slot_link, slot);
         else
             THalfDisconnectMsg<TEdge<TParams...>, TSlot<TParams...>>::
-                Send(std::move(edge_link), this, slot);
+                Send(std::move(edge_link), this, slot_link, slot);
     }
 
     static void
@@ -1111,6 +1189,20 @@ void Disconnect(const TEdgeContainer* edge_object,
 }
 
 
+template <typename TEdgeContainer, typename TSlotContainer, typename...TParams>
+void DisconnectFromEdge(
+        const TEdgeContainer* edge_object,
+        TEdge<TParams...>* edge,
+        const TSlotContainer* slot_object,
+        TSlot<TParams...>* slot)
+{
+    edge->disconnect(
+            edge_object->GetAnchor().GetLink(),
+            slot_object->GetAnchor().GetLink(),
+            slot);
+}
+
+
 class TActivateTimerSignal: public TObjectMessage {
 public:
     TActivateTimerSignal(TMonitorPtr link, TEdgeSlotTimer* timer)
@@ -1127,9 +1219,25 @@ protected:
 };
 
 
+class TDeactivateTimerSignal: public TObjectMessage {
+public:
+    TDeactivateTimerSignal(TMonitorPtr link, TEdgeSlotTimer* timer)
+        : TObjectMessage(std::move(link))
+        , Timer(timer)
+    {}
+
+    virtual void Consume() override;
+
+protected:
+    TEdgeSlotTimer* Timer;
+
+    friend class TEdgeSlotTimer;
+};
+
+
 class TEdgeSlotTimer: public TEdgeSlotObject {
 public:
-    TEdgeSlotTimer(ui64 period /* in microseconds */, bool repeat = false)
+    TEdgeSlotTimer(ui64 period = 0/* in microseconds */, bool repeat = false)
         : Period(period)
         , Repeat(repeat)
     {}
@@ -1143,6 +1251,12 @@ public:
         int res = ::clock_gettime(CLOCK_MONOTONIC, &ts);
         ESyscallError::Validate(res, "clock_gettime");
         return (ui64) ts.tv_sec * 1000000 + (ui64) ts.tv_nsec / 1000;
+    }
+
+    void Hit() {
+        if (!ActiveState.load(std::memory_order_acquire))
+            return;
+        Timeout.emit();
     }
 
     TEdge<> Timeout = TEdge<>(this);
@@ -1182,6 +1296,20 @@ public:
         }
     }
 
+    void Deactivate(TMonitorPtr link) {
+        ActiveState.store(false, std::memory_order_release);
+        if (link->SameMailbox()) {
+            TEdgeSlotThread::UnregisterTimer(this);
+        } else {
+            auto ts = new TDeactivateTimerSignal(std::move(link), this);
+            ts->JustSend();
+        }
+    }
+
+    void Deactivate() {
+        Deactivate(GetAnchor().GetLink());
+    }
+
     bool IsActive() const {
         return ActiveState.load(std::memory_order_acquire);
     }
@@ -1201,7 +1329,15 @@ WEAK void TActivateTimerSignal::Consume() {
 }
 
 
+WEAK void TDeactivateTimerSignal::Consume() {
+    if (!ObjectLink->IsAlive())
+        return;
+    Timer->Deactivate(std::move(ObjectLink));
+}
+
+
 WEAK void TEdgeSlotThread::RegisterTimer(TEdgeSlotTimer* timer) {
+    UnregisterTimer(timer);
     for (auto i = ActiveTimers.begin(); i != ActiveTimers.end(); ++i) {
         if (timer->GetNextHitTime() >= (*i)->GetNextHitTime())
             continue;
@@ -1209,6 +1345,16 @@ WEAK void TEdgeSlotThread::RegisterTimer(TEdgeSlotTimer* timer) {
         return;
     }
     ActiveTimers.push_back(timer);
+}
+
+
+WEAK void TEdgeSlotThread::UnregisterTimer(TEdgeSlotTimer* timer) {
+    for (auto i = ActiveTimers.begin(); i != ActiveTimers.end(); ++i) {
+        if (timer != *i)
+            continue;
+        ActiveTimers.erase(i);
+        break;
+    }
 }
 
 
@@ -1228,7 +1374,7 @@ void TEdgeSlotThread::MessageLoop(Fn&& condition) noexcept {
                 break;
             auto timer = ActiveTimers.front();
             ActiveTimers.erase(ActiveTimers.begin());
-            timer->Timeout.emit();
+            timer->Hit();
             timer->Reregister();
         }
 
@@ -1287,6 +1433,16 @@ bool TEdgeSlotThread::WaitForSignal(
 	MessageLoop(connect_checker);
 
 	return catcher.GotIt;
+}
+
+
+template <typename...TParams>
+void TEdgeSlotThread::WaitForDisconnected(TSlot<TParams...>* slot) noexcept {
+    auto connect_checker = [&]() -> bool {
+        return slot->is_connected();
+    };
+
+    MessageLoop(connect_checker);
 }
 
 

@@ -25,6 +25,8 @@ SOFTWARE.
 #pragma once
 #include <atomic>
 #include <utility>
+#include "mt_semaphore.hh"
+
 
 namespace bsc {
 
@@ -74,5 +76,40 @@ protected:
     Elem* head;
     std::atomic<Elem*> tail;
 };
+
+
+template <typename TPayload>
+class MPSC_TailSwap_Wait {
+public:
+    void enqueue(TPayload msg) {
+        Queue.enqueue(std::move(msg));
+        if (Sem.Get() <= 0)
+            Sem.Post();
+    }
+
+    TPayload dequeue() {
+        TPayload result;
+        for (;;) {
+            if (Queue.dequeue(&result))
+                return result;
+            Sem.Wait();
+        }
+    }
+
+    bool dequeue(TPayload* result, ui64 wait_time) {
+        for (;;) {
+            if (Queue.dequeue(result))
+                return true;
+            if (Sem.Wait(wait_time))
+                return false;
+        }
+    }
+
+protected:
+    MPSC_TailSwap<TPayload> Queue;
+    TSemaphore Sem;
+};
+
+
 
 }
