@@ -33,6 +33,7 @@ SOFTWARE.
 #include <thread>
 #include "spinrwlock.hh"
 #include "mt_semaphore.hh"
+#include <time.h>
 
 
 namespace bsc {
@@ -74,6 +75,17 @@ public:
             Sem.Wait();
         }
     }
+
+    TMessagePtr dequeue(ui64 wait_time) {
+        TMessagePtr result;
+        for (;;) {
+            if (Queue.dequeue(&result))
+                return result;
+            if (Sem.Wait(wait_time))
+                return TMessagePtr();
+        }
+    }
+
 protected:
     MPSC_TailSwap<TMessagePtr> Queue;
     TSemaphore Sem;
@@ -82,6 +94,7 @@ protected:
 
 class TObjectAnchor;
 class TEdgeSlotObject;
+class TEdgeSlotTimer;
 
 
 class TEdgeSlotThread {
@@ -89,7 +102,7 @@ public:
     TEdgeSlotThread()
         : Mailbox(std::make_shared<TMailbox>())
     {
-        Thread = std::thread(MessageLoop, this);
+        Thread = std::thread(ThreadMessageLoop, this);
     }
 
     TEdgeSlotThread(TEdgeSlotThread&&) = default;
@@ -146,22 +159,37 @@ public:
         Mailbox->enqueue(std::move(msg));
     }
 
-    static void MessageLoop(TEdgeSlotThread* self) noexcept {
-        LocalMailbox = self->Mailbox;
-        for (;;) {
-            auto msg = TEdgeSlotThread::LocalMailbox->dequeue();
-            try {
-                msg->Consume();
-            } catch (EQuitLoop&) {
-                return;
-            } catch (...) {
-            }
-        }
-    };
+    static void PostSelfQuitMessage() noexcept {
+    	TMessagePtr msg(new TQuitMessage);
+    	LocalMailbox->enqueue(std::move(msg));
+    }
+
+    template <typename Fn>
+    static void MessageLoop(Fn&& condition) noexcept;
+
+    static void MessageLoop() noexcept {
+        auto always_true = []() -> bool { return true; };
+        MessageLoop(always_true);
+    }
+
+    static void RegisterTimer(TEdgeSlotTimer* timer);
+
+    static void CleanupTimers() noexcept {
+    	ActiveTimers.clear();
+    	ActiveTimers.shrink_to_fit();
+    }
+
+
+    template <typename Fn, typename...TParams>
+    static bool WaitForSignal(
+	    TEdgeSlotObject* object, TEdge<TParams...>* edge, Fn&& start) noexcept;
 
 protected:
     std::shared_ptr<TMailbox> Mailbox;
     std::thread Thread;
+    static thread_local std::vector<TEdgeSlotTimer*> ActiveTimers;
+
+    static void ThreadMessageLoop(TEdgeSlotThread* self) noexcept;
 
     template <class Fn, class...Params>
     static void
@@ -218,7 +246,7 @@ public:
 
     bool SameMailbox() const noexcept {
         TReadGuard guard(&MailboxLock); // UB if no read guard
-        return TEdgeSlotThread::LocalMailbox.get() == Mailbox.get();
+        return TEdgeSlotThread::LocalMailbox == Mailbox;
     }
 
 protected:
@@ -267,6 +295,14 @@ public:
         Monitor = move.Monitor;
         move.Monitor = nullptr;
         return *this;
+    }
+
+    bool operator==(const TMonitorPtr& right_op) const noexcept {
+    	return Monitor == right_op.Monitor;
+    }
+
+    bool operator!=(const TMonitorPtr& right_op) const noexcept {
+    	return Monitor != right_op.Monitor;
     }
 
     ~TMonitorPtr() noexcept {
@@ -605,10 +641,42 @@ protected:
 };
 
 
-#define DEFINE_SLOT(TObject, Method, SlotName)                       \
-    decltype(bsc::GetCallee(&TObject::Method))::TSlotType SlotName = \
-        decltype(bsc::GetCallee(&TObject::Method))::                 \
-            GetSlot<&TObject::Method>(this);
+template <typename...TParams>
+class TFullDisconnectMsg: public TObjectMessage {
+public:
+    TFullDisconnectMsg(TMonitorPtr dest_link,
+                       TSlot<TParams...>* dest,
+					   TMonitorPtr edge_link,
+                       TEdge<TParams...>* apart)
+        : TObjectMessage(std::move(dest_link))
+        , Dest(dest)
+		, ApartLink(std::move(edge_link))
+        , Apart(apart)
+    {}
+
+    virtual void Consume() override {
+        if (!ObjectLink->IsAlive())
+            return;
+        Dest->disconnect(std::move(ObjectLink), std::move(ApartLink), Apart);
+    }
+
+    template <typename...Types>
+    static void Send(Types&&...params) {
+        auto msg = new TFullDisconnectMsg(std::forward<Types>(params)...);
+        msg->JustSend();
+    }
+
+protected:
+    TSlot<TParams...>* Dest;
+    TMonitorPtr ApartLink;
+    TEdge<TParams...>* Apart;
+};
+
+
+#define DEFINE_SLOT(TObject, Method, SlotName)                                \
+    typename decltype(bsc::GetCallee(&TObject::Method))::TSlotType SlotName = \
+        decltype(bsc::GetCallee(&TObject::Method))::                          \
+            template GetSlot<&TObject::Method>(this);
 
 
 template <typename...TParams>
@@ -624,13 +692,24 @@ public:
             i.Edge->half_disconnect(i.ObjectLink, this);
     }
 
-    void disconnect(TEdge<TParams...>* edge) {
+    void disconnect(TMonitorPtr edge_link, TEdge<TParams...>* edge) {
         for (auto i = SlotConnections.begin(); i != SlotConnections.end(); ++i)
-            if (i->Edge == edge) {
+            if (i->Edge == edge && i->ObjectLink == edge_link) {
                 edge->half_disconnect(std::move(i->ObjectLink), this);
                 SlotConnections.erase(i);
                 break;
             }
+    }
+
+    void disconnect(TMonitorPtr slot_link,
+    				TMonitorPtr edge_link,
+					TEdge<TParams...>* edge)
+    {
+    	if (slot_link->SameMailbox())
+    		disconnect(std::move(edge_link), edge);
+    	else
+    		TFullDisconnectMsg<TParams...>::
+				Send(std::move(slot_link), this, std::move(edge_link), edge);
     }
 
     void disconnect_all(TEdge<TParams...>* edge) {
@@ -665,6 +744,10 @@ public:
             TFullConnectMsg<TParams...>::
                 Send(slot_link, this, edge_link, edge, type);
         }
+    }
+
+    bool is_connected() const noexcept {
+        return SlotConnections.size() > 0;
     }
 
 protected:
@@ -770,7 +853,7 @@ public:
 
             switch (elem.Type) {
             case DELIVERY::AUTO:
-                if (mbox.get() == TEdgeSlotThread::LocalMailbox.get()) {
+                if (mbox == TEdgeSlotThread::LocalMailbox) {
                     elem.Slot->receive(params...);
                     continue;
                 }
@@ -1012,6 +1095,198 @@ void Connect(const TEdgeContainer* edge_object,
         edge_object->GetAnchor().GetLink(),
         edge,
         type);
+}
+
+
+template <typename TEdgeContainer, typename TSlotContainer, typename...TParams>
+void Disconnect(const TEdgeContainer* edge_object,
+				TEdge<TParams...>* edge,
+				const TSlotContainer* slot_object,
+				TSlot<TParams...>* slot)
+{
+	slot->disconnect(
+			slot_object->GetAnchor().GetLink(),
+			edge_object->GetAnchor().GetLink(),
+			edge);
+}
+
+
+class TActivateTimerSignal: public TObjectMessage {
+public:
+    TActivateTimerSignal(TMonitorPtr link, TEdgeSlotTimer* timer)
+        : TObjectMessage(std::move(link))
+        , Timer(timer)
+    {}
+
+    virtual void Consume() override;
+
+protected:
+    TEdgeSlotTimer* Timer;
+
+    friend class TEdgeSlotTimer;
+};
+
+
+class TEdgeSlotTimer: public TEdgeSlotObject {
+public:
+    TEdgeSlotTimer(ui64 period /* in microseconds */, bool repeat = false)
+        : Period(period)
+        , Repeat(repeat)
+    {}
+
+    ui64 GetNextHitTime() const noexcept {
+        return NextHit;
+    }
+
+    static ui64 GetNow() {
+        timespec ts;
+        int res = ::clock_gettime(CLOCK_MONOTONIC, &ts);
+        ESyscallError::Validate(res, "clock_gettime");
+        return (ui64) ts.tv_sec * 1000000 + (ui64) ts.tv_nsec / 1000;
+    }
+
+    TEdge<> Timeout = TEdge<>(this);
+
+    void Reregister() {
+        if (!Repeat) {
+            ActiveState.store(false, std::memory_order_release);
+            return;
+        }
+        NextHit += Period;
+        TEdgeSlotThread::RegisterTimer(this);
+    }
+
+    void Activate() {
+        Activate(GetAnchor().GetLink());
+    }
+
+    void Activate(ui64 period) {
+        Period = period;
+        Activate();
+    }
+
+    void Activate(ui64 period, bool repeat) {
+        Period = period;
+        Repeat = repeat;
+        Activate();
+    }
+
+    void Activate(TMonitorPtr link) {
+        ActiveState.store(true, std::memory_order_release);
+        if (link->SameMailbox()) {
+            NextHit = Period + GetNow();
+            TEdgeSlotThread::RegisterTimer(this);
+        } else {
+            auto ts = new TActivateTimerSignal(std::move(link), this);
+            ts->JustSend();
+        }
+    }
+
+    bool IsActive() const {
+        return ActiveState.load(std::memory_order_acquire);
+    }
+
+protected:
+    ui64 Period;
+    ui64 NextHit;
+    bool Repeat;
+    std::atomic<bool> ActiveState = {false};
+};
+
+
+WEAK void TActivateTimerSignal::Consume() {
+    if (!ObjectLink->IsAlive())
+        return;
+    Timer->Activate(std::move(ObjectLink));
+}
+
+
+WEAK void TEdgeSlotThread::RegisterTimer(TEdgeSlotTimer* timer) {
+    for (auto i = ActiveTimers.begin(); i != ActiveTimers.end(); ++i) {
+        if (timer->GetNextHitTime() >= (*i)->GetNextHitTime())
+            continue;
+        ActiveTimers.insert(i, timer);
+        return;
+    }
+    ActiveTimers.push_back(timer);
+}
+
+
+WEAK void TEdgeSlotThread::ThreadMessageLoop(TEdgeSlotThread* self) noexcept {
+	LocalMailbox = self->Mailbox;
+	MessageLoop();
+}
+
+
+template <typename Fn>
+void TEdgeSlotThread::MessageLoop(Fn&& condition) noexcept {
+    for (;;) {
+        while (ActiveTimers.size() > 0) {
+            auto now = TEdgeSlotTimer::GetNow();
+            auto front_hit = ActiveTimers.front()->GetNextHitTime();
+            if (now < front_hit)
+                break;
+            auto timer = ActiveTimers.front();
+            ActiveTimers.erase(ActiveTimers.begin());
+            timer->Timeout.emit();
+            timer->Reregister();
+        }
+
+        if (!condition())
+            return;
+
+        TMessagePtr msg;
+
+        if (ActiveTimers.size() > 0) {
+            auto front_hit = ActiveTimers.front()->GetNextHitTime();
+            auto now = TEdgeSlotTimer::GetNow();
+            ui64 max_wait_time = front_hit - now;
+            msg = TEdgeSlotThread::LocalMailbox->dequeue(max_wait_time);
+            if (msg.get() == nullptr)
+                continue;
+        } else {
+            msg = TEdgeSlotThread::LocalMailbox->dequeue();
+        }
+
+        try {
+            msg->Consume();
+        } catch (EQuitLoop&) {
+            return;
+        } catch (...) {
+        }
+    }
+};
+
+
+template <typename Fn, typename...TParams>
+bool TEdgeSlotThread::WaitForSignal(
+		TEdgeSlotObject* object, TEdge<TParams...>* edge, Fn&& start) noexcept
+{
+    class TCatcher: public TEdgeSlotObject {
+    public:
+        void catch_signal(TParams...) {
+            GotIt = true;
+            TEdgeSlotThread::PostSelfQuitMessage();
+        }
+
+        DEFINE_SLOT(TCatcher, catch_signal, CatchSlot);
+
+        bool GotIt = false;
+    };
+
+	TCatcher catcher;
+	Connect(object, edge, &catcher, &catcher.CatchSlot);
+
+	if (!start())
+	    return false;
+
+    auto connect_checker = [&]() -> bool {
+        return catcher.CatchSlot.is_connected();
+    };
+
+	MessageLoop(connect_checker);
+
+	return catcher.GotIt;
 }
 
 

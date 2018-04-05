@@ -29,5 +29,7 @@ namespace bsc {
 thread_local std::shared_ptr<TMailbox>
 TEdgeSlotThread::LocalMailbox = std::make_shared<TMailbox>();
 
+thread_local std::vector<TEdgeSlotTimer*> TEdgeSlotThread::ActiveTimers;
+
 
 } // namespace bsc

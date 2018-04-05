@@ -24,16 +24,22 @@ SOFTWARE.
 
 #pragma once
 
-typedef unsigned char ui8;
-typedef signed char i8;
-typedef signed char si8;
-
-typedef unsigned short ui16;
-typedef signed short i16;
-typedef signed short si16;
-
 typedef unsigned int ui32;
 typedef signed int i32;
 typedef signed int si32;
+
+#if __WORDSIZE == 64
+    typedef unsigned long int ui64;
+    typedef signed long int i64;
+    typedef signed long int si64;
+#else
+    typedef unsigned long long int ui64;
+    typedef signed long long int i64;
+    typedef signed long long int si64;
+#endif
+
+static_assert(sizeof(ui64) == 8, "error in definition of ui64");
+static_assert(sizeof(i64) == 8, "error in definition of i64");
+static_assert(sizeof(si64) == 8, "error in definition of si64");
 
 typedef __PTRDIFF_TYPE__ ptrdiff_t;

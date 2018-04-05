@@ -34,8 +34,9 @@ using bsc::GetCallee;
 using bsc::IMessage;
 using bsc::MPSC_TailSwap;
 using bsc::TEdge;
-using bsc::TEdgeSlotThread;
 using bsc::TEdgeSlotObject;
+using bsc::TEdgeSlotThread;
+using bsc::TEdgeSlotTimer;
 using bsc::TMailbox;
 using bsc::TMessagePtr;
 using bsc::TObjectMessage;
@@ -73,6 +74,15 @@ public:
     TEdge<int, int> Edge = TEdge<int, int>(this);
 };
 
+class TTriggerPostQuitMessage: public TEdgeSlotObject {
+public:
+	void timeout() {
+		TEdgeSlotThread::PostSelfQuitMessage();
+	}
+
+	DEFINE_SLOT(TTriggerPostQuitMessage, timeout, Slot);
+};
+
 
 class TCallbackSlot: public TEdgeSlotObject {
 public:
@@ -97,8 +107,10 @@ TEST_GROUP(EDGE_SLOT) {
 
     void teardown() {
         TEdgeSlotThread::LocalMailbox.reset();
+        TEdgeSlotThread::CleanupTimers();
     }
 };
+
 
 TEST(EDGE_SLOT, ConnectAndEmit) {
     TTestEdge sig;
@@ -204,7 +216,7 @@ TEST(EDGE_SLOT, SlotDisconnectEdge) {
     sig.Edge.emit(1, 2);
     CHECK(slt.Counter == 3);
 
-    slt.Slot.disconnect(&sig.Edge);
+    slt.Slot.disconnect(sig.GetAnchor().GetLink(), &sig.Edge);
     sig.Edge.emit(1, 2);
     CHECK(slt.Counter == 3);
 }
@@ -252,11 +264,11 @@ TEST(EDGE_SLOT, SlotDisconnectEdgeOnce) {
     sig.Edge.emit(1, 2);
     CHECK(slt.Counter == 6);
 
-    slt.Slot.disconnect(&sig.Edge);
+    slt.Slot.disconnect(sig.GetAnchor().GetLink(), &sig.Edge);
     sig.Edge.emit(1, 2);
     CHECK(slt.Counter == 9);
 
-    slt.Slot.disconnect(&sig.Edge);
+    slt.Slot.disconnect(sig.GetAnchor().GetLink(), &sig.Edge);
     sig.Edge.emit(1, 2);
     CHECK(slt.Counter == 9);
 }
@@ -391,7 +403,7 @@ TEST(EDGE_SLOT, ProxyDisconnectEdge) {
     sig2.Edge.emit(1, 2);
     CHECK(slt.Counter == 6);
 
-    proxy.Edge.disconnect(&sig1.Edge);
+    proxy.Edge.disconnect(sig1.GetAnchor().GetLink(), &sig1.Edge);
     sig1.Edge.emit(1, 2);
     CHECK(slt.Counter == 6);
     sig2.Edge.emit(1, 2);
@@ -451,7 +463,7 @@ TEST(EDGE_SLOT, SlotDisconnectEdgeWhileEmitting) {
     TTestEdge sig;
 
     auto cb = [&](){
-        slt.Slot.disconnect(&sig.Edge);
+        slt.Slot.disconnect(sig.GetAnchor().GetLink(), &sig.Edge);
     };
     slt.Callback = cb;
 
@@ -491,7 +503,7 @@ TEST(EDGE_SLOT, SlotDisconnectEdgeOnceWhileEmitting) {
     TTestEdge sig;
 
     auto cb = [&](){
-        slt.Slot.disconnect(&sig.Edge);
+        slt.Slot.disconnect(sig.GetAnchor().GetLink(), &sig.Edge);
         slt.Callback = nullptr;
     };
     slt.Callback = cb;
@@ -639,8 +651,13 @@ TEST(EDGE_SLOT, MailboxTwoThreads) {
 
 
 TEST_GROUP(EDGE_SLOT_THREAD) {
+    void setup() {
+        TEdgeSlotThread::LocalMailbox = std::make_shared<TMailbox>();
+    }
+
     void teardown() {
         TEdgeSlotThread::LocalMailbox.reset();
+        TEdgeSlotThread::CleanupTimers();
     }
 };
 
@@ -694,4 +711,41 @@ TEST(EDGE_SLOT_THREAD, BlockingDelivery) {
     thr.join();
 
     CHECK(slt.Counter == 3);
+}
+
+TEST(EDGE_SLOT, Timer) {
+	TEdgeSlotTimer timer(100000);
+	TTriggerPostQuitMessage slt;
+
+	Connect(&timer, &timer.Timeout, &slt, &slt.Slot);
+	timer.Activate();
+
+	TEdgeSlotThread::MessageLoop();
+}
+
+TEST(EDGE_SLOT, WaitForSignal) {
+    TEdgeSlotTimer timer(100000);
+
+    auto starter = [&]() -> bool {
+        timer.Activate();
+        return true;
+    };
+
+    bool catched =
+        TEdgeSlotThread::WaitForSignal(&timer, &timer.Timeout, starter);
+    CHECK(catched);
+}
+
+TEST(EDGE_SLOT, WaifForSignalAndDeleteEdge) {
+    std::unique_ptr<TTestEdge> sig(new TTestEdge);
+
+    auto deleter = [&]() -> bool {
+        sig.reset();
+        return true;
+    };
+
+    bool catched =
+        TEdgeSlotThread::WaitForSignal(sig.get(), &sig->Edge, deleter);
+
+    CHECK(!catched);
 }
