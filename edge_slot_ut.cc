@@ -695,6 +695,24 @@ TEST(EDGE_SLOT_THREAD, MoveObjectToThread) {
     CHECK(slt.Counter == 3);
 }
 
+
+TEST(EDGE_SLOT_THREAD, ConnectToObjectInAnotherThreadAndEmit) {
+    TEdgeSlotThread thr;
+
+    TCheckMailboxTestSlot slt;
+    thr.GrabObject(&slt);
+
+    TTestEdge sig;
+    Connect(&sig, &sig.Edge, &slt, &slt.Slot);
+    sig.Edge.emit(1, 2);
+
+    thr.PostQuitMessage();
+    thr.join();
+
+    CHECK(slt.Counter == 3);
+}
+
+
 TEST(EDGE_SLOT_THREAD, BlockingDelivery) {
     TEdgeSlotThread thr;
 
