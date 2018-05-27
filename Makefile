@@ -1,13 +1,21 @@
-sources = $(wildcard *.cc)
+sources = edge_slot.cc
+ut_sources = edge_slot_ut.cc main_ut.cc
 
 objects = $(sources:.cc=.o)
-depends = $(sources:.cc=.d)
+ut_objects = $(ut_sources:.cc=.o)
 
-all: $(objects)
+depends = $(sources:.cc=.d)
+ut_depends = $(ut_sources:.cc=.d)
+
+all: lib
+
+lib: deps $(objects)
+	ar rcs libedge-slot.a $(objects)
+
 deps: $(depends)
 
 %.d: %.cc
-	$(CXX) -MM -std=c++14 -pthread -lCppUTest -lCppUTestExt -Wall -Wextra -O2 $< -o $@.temp
+	$(CXX) -MM -std=c++14 -pthread -Wall -Wextra -O2 $< -o $@.temp
 	mv -f $@.temp $@
 
 include $(sources:.cc=.d)
@@ -16,8 +24,8 @@ include $(sources:.cc=.d)
 	$(CXX) -pthread -std=c++14 -Wall -Wextra -O2 -c $< -o $@.temp
 	mv -f $@.temp $@
 
-test: $(objects)
-	$(CXX) $(objects) -pthread -std=c++14 -lCppUTest -lCppUTestExt -Wall -Wextra -o test
+test: lib $(ut_objects)
+	$(CXX) $(ut_objects) libedge-slot.a -pthread -std=c++14 -lCppUTest -lCppUTestExt -Wall -Wextra -o test
 
 clean:
-	rm -f *.d *.o test
+	rm -f *.d *.o libedge-slot.a test
