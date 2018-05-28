@@ -895,7 +895,7 @@ public:
 
                 if (msg.get() == nullptr)
                     msg = std::make_shared<TSignal<TParams...>>(
-                            elem.ObjectLink, elem.Slot, params...);
+                        elem.ObjectLink, elem.Slot, params...);
 
                 mbox->enqueue(msg);
                 break;
@@ -905,14 +905,19 @@ public:
                 break;
 
             case DELIVERY::BLOCK_QUEUE:
+                if (mbox == TEdgeSlotThread::LocalMailbox) {
+                    elem.Slot->receive(params...);
+                    continue;
+                }
+
+                if (mbox.get() == nullptr)
+                    continue;
+
+                if (msg.get() == nullptr)
+                    msg = std::make_shared<TSignal<TParams...>>(
+                        elem.ObjectLink, elem.Slot, params...);
+
                 {
-                    if (mbox.get() == nullptr)
-                        continue;
-
-                    if (msg.get() == nullptr)
-                        msg = std::make_shared<TSignal<TParams...>>(
-                                elem.ObjectLink, elem.Slot, params...);
-
                     std::shared_ptr<TBlockSignal> block =
                             std::make_shared<TBlockSignal>(msg);
                     mbox->enqueue(block);

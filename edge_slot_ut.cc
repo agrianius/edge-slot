@@ -769,3 +769,15 @@ TEST(EDGE_SLOT, WaifForSignalAndDeleteEdge) {
 
     CHECK(!catched);
 }
+
+
+TEST(EDGE_SLOT, NoDeadlockFor_BLOCK_QUEUE_InOneThread) {
+    TTestEdge sig;
+    TTestSlot slt;
+
+    Connect(&sig, &sig.Edge, &slt, &slt.Slot, bsc::DELIVERY::BLOCK_QUEUE);
+
+    CHECK(slt.Counter == 0);
+    sig.Edge.emit(1, 2);
+    CHECK(slt.Counter == 3)
+}
