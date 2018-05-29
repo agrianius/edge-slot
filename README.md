@@ -45,7 +45,7 @@ Slot is a receiver and consumer of signals. Example for a slot that consumes two
     class Bar: public TEdgeSlotObject {
     public:
         void slot_func(int a, int b) {
-            /* put here your code */
+            /* put your code here */
         }
 
         DEFINE_SLOT(Bar, slot_func, SomeSlotName);
