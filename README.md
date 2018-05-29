@@ -107,9 +107,9 @@ You may grab object after creating a connection, the following is valid
 
 Actually each TEdgeSlotObject object belongs to some thread. AUTO, QUEUE and BLOCK_QUEUE connection types always deliver signals in a thread a slot belongs to.
 
-WARNING: DIRECT connection type always delivers signals in the current thread.
+WARNING: DIRECT connection always delivers signals in the current thread.
 
-NOTINCE: BLOCK_QUEUE connection makes a direct call if a slot in the same thread.
+NOTICE: BLOCK_QUEUE connection makes a direct call if a slot in the same thread.
 
 WARNING: Always emit signals from a thread an edge belongs to unless you know what you are doing.
 
