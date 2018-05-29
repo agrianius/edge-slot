@@ -113,7 +113,7 @@ NOTICE: BLOCK_QUEUE connection makes a direct call if a slot in the same thread.
 
 WARNING: Always emit signals from a thread an edge belongs to unless you know what you are doing.
 
-WARNING: You may safely delete an object in a thread the object belongs to. You may safely delete object in any thread if there is no ongoing signals coming to the object.
+WARNING: You may safely delete an object in a thread the object belongs to. You may safely delete an object in any thread if there is no ongoing signals coming to the object.
 
 NOTICE: After destroying a thread all objects that belong to the thread will be suspended. All signals to the objects will never be delivered (except for DIRECT connections) and will stay in the memory until all the objects will be destroyed or grabbed to another thread. This is because all signals is put into a queue which will be destroyed only if no objects associated with the queue.
 
