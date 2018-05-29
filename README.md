@@ -29,7 +29,7 @@ An object can be moved to another thread. This will cause arbitrary delivery ord
 
 If memory allocator was lock free then signal delivery is lock-free except the case of moving objects between threads. While moving an object to another thread there is a short time lock that may hinder signal delivery to the object. The lock is needed for correct reference counting to mailbox.
 
-Sending of a signal is wait-free if memory allocator was wait-free. But receiving of a signal is not wait-free becase one sleeping sending thread hinder receiving of all subsequent signals.
+Sending of a signal is wait-free if memory allocator was wait-free. But receiving of a signal is not wait-free because one sleeping sending thread may hinder receiving of all subsequent signals.
 
 ### Quick guide
 
