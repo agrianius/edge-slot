@@ -117,7 +117,7 @@ WARNING: You may safely delete an object in a thread the object belongs to. You 
 
 NOTICE: After destroying a thread all objects that belong to the thread will be suspended. All signals to the objects will never be delivered (except for DIRECT connections) and will stay in the memory until all the objects will be destroyed or grabbed to another thread. This is because all signals is put into a queue which will be destroyed only if no objects associated with the queue.
 
-It's ok to use multiple inheritance with bsc::TEdgeSlotObject, actually it virually inherits a helper class:
+It's ok to use multiple inheritance with bsc::TEdgeSlotObject, actually it virtually inherits a helper class:
 
     class TEdgeSlotObject: public virtual TAnchorHolder {
     };
