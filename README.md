@@ -1,5 +1,6 @@
 # edge-slot
-This is something similar to QT signals&amp;slots paradigm
+This is something similar to QT signals&amp;slots paradigm.
+The project moved to gitlab https://gitlab.com/agrianius/edge-slot.
 
 ### Some recurrent definitions
 Edge - source of signals
